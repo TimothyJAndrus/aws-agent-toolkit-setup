@@ -71,14 +71,20 @@ jobs:
         run: |
           TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
-          echo "$TOKEN" > /tmp/oidc-token.txt
-          echo "Calling sts:AssumeRoleWithWebIdentity directly..."
+          echo "Trying us-east-1 (global STS endpoint)..."
           aws sts assume-role-with-web-identity \
             --role-arn "${{ secrets.AWS_ROLE_ARN }}" \
             --role-session-name debug-session \
-            --web-identity-token file:///tmp/oidc-token.txt \
+            --web-identity-token "$TOKEN" \
+            --region us-east-1 \
+            --no-cli-pager 2>&1 || true
+          echo "Trying us-west-2 (regional STS endpoint)..."
+          aws sts assume-role-with-web-identity \
+            --role-arn "${{ secrets.AWS_ROLE_ARN }}" \
+            --role-session-name debug-session \
+            --web-identity-token "$TOKEN" \
             --region us-west-2 \
-            --no-cli-pager 2>&1
+            --no-cli-pager 2>&1 || true
 
       - name: Verify AWS identity
         run: aws sts get-caller-identity
