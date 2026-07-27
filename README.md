@@ -288,6 +288,10 @@ aws iam create-role \
 
 This least-privilege policy grants exactly what `verify.sh` needs:
 
+> **Note:** `agent-toolkit` is not a registered IAM service namespace — `aws agent-toolkit
+> list-available-skills` requires no explicit IAM permission and is accessible to any
+> authenticated principal. It is therefore omitted from the policy below.
+
 ```bash
 cat > /tmp/agent-toolkit-verify-policy.json <<'EOF'
 {
@@ -297,14 +301,6 @@ cat > /tmp/agent-toolkit-verify-policy.json <<'EOF'
       "Sid": "STSIdentity",
       "Effect": "Allow",
       "Action": "sts:GetCallerIdentity",
-      "Resource": "*"
-    },
-    {
-      "Sid": "AgentToolkitRead",
-      "Effect": "Allow",
-      "Action": [
-        "agent-toolkit:ListAvailableSkills"
-      ],
       "Resource": "*"
     },
     {

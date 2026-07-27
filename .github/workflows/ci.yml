@@ -45,7 +45,7 @@ jobs:
   #   3. Attach the following managed policies to the role:
   #        - AmazonBedrockReadOnly
   #        - CloudWatchLogsFullAccess
-  #        - AWSAgentToolkitReadOnly  (or equivalent for list-available-skills)
+  #        Note: agent-toolkit:ListAvailableSkills needs no IAM permission.
   #   4. Add the role ARN as a repository secret named AWS_ROLE_ARN.
   #   5. Change `if: false` below to `if: vars.AWS_ROLE_ARN != ''`
   #      (or remove the `if` entirely once the secret is present).
