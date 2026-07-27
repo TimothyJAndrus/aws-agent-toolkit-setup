@@ -61,18 +61,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-west-2
-          role-session-name: GitHubActions-AgentToolkitVerify
-
       - name: Install AWS CLI v2
         run: |
           curl -fsSL 'https://awscli.amazonaws.com/v2/install.sh' | bash
           export PATH="$HOME/.local/bin:$PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Assume role via STS directly (raw error output)
+        run: |
+          TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "$TOKEN" > /tmp/oidc-token.txt
+          echo "Calling sts:AssumeRoleWithWebIdentity directly..."
+          aws sts assume-role-with-web-identity \
+            --role-arn "${{ secrets.AWS_ROLE_ARN }}" \
+            --role-session-name debug-session \
+            --web-identity-token file:///tmp/oidc-token.txt \
+            --region us-west-2 \
+            --no-cli-pager 2>&1
 
       - name: Verify AWS identity
         run: aws sts get-caller-identity
