@@ -53,6 +53,9 @@ jobs:
     name: Integration test (verify.sh)
     runs-on: ubuntu-latest
     needs: lint
+    permissions:
+      id-token: write   # required at job level for OIDC token request
+      contents: read
 
     steps:
       - name: Checkout
