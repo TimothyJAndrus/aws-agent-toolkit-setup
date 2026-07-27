@@ -248,6 +248,12 @@ aws iam list-open-id-connect-providers
 
 **1. Write the trust policy** — replace `<ACCOUNT_ID>` with your 12-digit account ID:
 
+> **Why `job_workflow_ref` instead of `sub`:** GitHub's OIDC token now embeds numeric user
+> and repository IDs directly into the `sub` claim
+> (e.g. `repo:Owner@12345/Repo@67890:ref:refs/heads/main`), making `sub`-based wildcard
+> patterns unreliable across accounts. Use `job_workflow_ref` instead — it identifies the
+> exact workflow file and branch without embedded IDs.
+
 ```bash
 cat > /tmp/github-actions-trust.json <<'EOF'
 {
@@ -264,7 +270,7 @@ cat > /tmp/github-actions-trust.json <<'EOF'
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
         },
         "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:TimothyJAndrus/aws-agent-toolkit-setup:*"
+          "token.actions.githubusercontent.com:job_workflow_ref": "TimothyJAndrus/aws-agent-toolkit-setup/.github/workflows/ci.yml@refs/heads/*"
         }
       }
     }
