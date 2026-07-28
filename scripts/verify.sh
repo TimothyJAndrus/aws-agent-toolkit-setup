@@ -94,14 +94,17 @@ else
   CREATED=false
 fi
 
-# Describe (brief sleep for CloudWatch eventual consistency)
+# Describe (sleep for CloudWatch eventual consistency; parse JSON robustly)
 if [[ "$CREATED" == true ]]; then
-  sleep 2
+  sleep 3
   info "Describing log group..."
-  if DESCRIBE="$(aws logs describe-log-groups \
-      --log-group-name-prefix "$LOG_GROUP" \
-      --region "$REGION" --no-cli-pager 2>/dev/null)" \
-      && echo "$DESCRIBE" | grep -q "$LOG_GROUP"; then
+  LG_COUNT=$(aws logs describe-log-groups \
+      --log-group-name-prefix "${LOG_GROUP##/}" \
+      --region "$REGION" --no-cli-pager --output json 2>/dev/null \
+    | python3 -c \
+      "import json,sys; print(len(json.load(sys.stdin).get('logGroups',[])))" \
+      2>/dev/null || echo 0)
+  if [[ "$LG_COUNT" -gt 0 ]]; then
     pass "Log group confirmed in AWS"
   else
     fail "Log group not found after creation"
