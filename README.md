@@ -485,6 +485,45 @@ aws agent-toolkit remove-skill --skill-name <skill-name> --region us-east-1
 | `aws ssm put-parameter` hangs | SSM write operations restricted for root account credentials | Use an IAM user or role (not root) for day-to-day operations |
 | Exit code 253 on toolkit install | Non-interactive terminal | Run `aws configure agent-toolkit --region us-east-1` manually |
 | Browser does not open on `aws login` | Headless environment | Copy the URL from terminal output and open it manually |
+| GitHub Actions OIDC: `AccessDenied` on `AssumeRoleWithWebIdentity` | Account-level restriction (see below) | Use IAM access key secrets as a workaround |
+
+### OIDC Federation AccessDenied — Details
+
+Despite a correctly configured OIDC provider, IAM role, and trust policy, GitHub Actions
+consistently receives `AccessDenied` when calling `sts:AssumeRoleWithWebIdentity`. This
+persists across:
+
+- Both `us-east-1` (global) and `us-west-2` (regional) STS endpoints
+- Resources created by both the root IAM Identity Center session and an IAM user
+- Both `sub` and `job_workflow_ref` trust conditions
+- With `id-token: write` set at both workflow and job level
+
+The JWT claims (`aud`, `sub`, `job_workflow_ref`) all match the trust policy exactly
+(confirmed via in-runner JWT decoding). No SCPs, no permission boundaries, no AWS
+Organizations. This is consistent with a new account-level restriction that AWS has
+applied to `sts:AssumeRoleWithWebIdentity` for certain account types.
+
+**Workaround — use IAM access key secrets:**
+
+1. Create an IAM user with the `AgentToolkitVerifyCI` policy attached
+2. Generate access keys for that user
+3. Store them as GitHub Actions secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+4. Replace the `Configure AWS credentials (OIDC)` step in `ci.yml` with:
+
+```yaml
+      - name: Configure AWS credentials (access keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+```
+
+**Resolving OIDC at the account level:**
+Contact AWS Support and ask them to investigate why `sts:AssumeRoleWithWebIdentity`
+returns `AccessDenied` for GitHub Actions OIDC tokens. Reference error:
+`An error occurred (AccessDenied) when calling the AssumeRoleWithWebIdentity operation:
+Not authorized to perform sts:AssumeRoleWithWebIdentity`.
 
 ---
 
