@@ -202,6 +202,240 @@ aws logs delete-log-group --log-group-name "/agent-toolkit/verification" --regio
 
 ---
 
+## GitHub Actions OIDC Integration
+
+The `verify` job in `.github/workflows/ci.yml` uses OpenID Connect (OIDC) to assume
+an IAM role — no long-lived access keys stored as secrets. Follow these steps to enable it.
+
+### Why OIDC?
+
+With OIDC, GitHub exchanges a short-lived token for temporary AWS credentials at runtime.
+Compared to storing `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` as repository secrets:
+
+- No static credentials to rotate or leak
+- Credentials expire automatically after each workflow run
+- Trust is scoped to a specific repository and branch
+
+### Prerequisites
+
+- Your AWS account ID (find it with `aws sts get-caller-identity --query Account --output text`)
+- The GitHub repository in `owner/repo` format — `TimothyJAndrus/aws-agent-toolkit-setup`
+- AWS CLI authenticated locally (`aws login`)
+
+---
+
+### Step A — Create the IAM OIDC Identity Provider
+
+Run once per AWS account. Skip if `token.actions.githubusercontent.com` is already listed
+under IAM → Identity Providers.
+
+```bash
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com \
+  --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+```
+
+Verify it was created:
+
+```bash
+aws iam list-open-id-connect-providers
+```
+
+---
+
+### Step B — Create the IAM Role
+
+**1. Write the trust policy** — replace `<ACCOUNT_ID>` with your 12-digit account ID:
+
+> **Why `job_workflow_ref` instead of `sub`:** GitHub's OIDC token now embeds numeric user
+> and repository IDs directly into the `sub` claim
+> (e.g. `repo:Owner@12345/Repo@67890:ref:refs/heads/main`), making `sub`-based wildcard
+> patterns unreliable across accounts. Use `job_workflow_ref` instead — it identifies the
+> exact workflow file and branch without embedded IDs.
+
+```bash
+cat > /tmp/github-actions-trust.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:job_workflow_ref": "TimothyJAndrus/aws-agent-toolkit-setup/.github/workflows/ci.yml@refs/heads/*"
+        }
+      }
+    }
+  ]
+}
+EOF
+```
+
+**2. Create the role:**
+
+```bash
+aws iam create-role \
+  --role-name GitHubActions-AgentToolkitVerify \
+  --assume-role-policy-document file:///tmp/github-actions-trust.json \
+  --description "Assumed by GitHub Actions for aws-agent-toolkit-setup CI"
+```
+
+---
+
+### Step C — Create and Attach the IAM Policy
+
+This least-privilege policy grants exactly what `verify.sh` needs:
+
+> **Note:** `agent-toolkit` is not a registered IAM service namespace — `aws agent-toolkit
+> list-available-skills` requires no explicit IAM permission and is accessible to any
+> authenticated principal. It is therefore omitted from the policy below.
+
+```bash
+cat > /tmp/agent-toolkit-verify-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "STSIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "BedrockRead",
+      "Effect": "Allow",
+      "Action": "bedrock:ListFoundationModels",
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchLogsCRUD",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DescribeLogGroups",
+        "logs:DeleteLogGroup"
+      ],
+      "Resource": "arn:aws:logs:*:*:log-group:/agent-toolkit/*"
+    }
+  ]
+}
+EOF
+```
+
+Create and attach the policy:
+
+```bash
+POLICY_ARN=$(aws iam create-policy \
+  --policy-name AgentToolkitVerifyCI \
+  --policy-document file:///tmp/agent-toolkit-verify-policy.json \
+  --query 'Policy.Arn' --output text)
+
+aws iam attach-role-policy \
+  --role-name GitHubActions-AgentToolkitVerify \
+  --policy-arn "$POLICY_ARN"
+```
+
+Note the role ARN — you'll need it in the next step:
+
+```bash
+aws iam get-role \
+  --role-name GitHubActions-AgentToolkitVerify \
+  --query 'Role.Arn' --output text
+# arn:aws:iam::<ACCOUNT_ID>:role/GitHubActions-AgentToolkitVerify
+```
+
+---
+
+### Step D — Add the Secret to GitHub
+
+Add the role ARN as a repository secret named `AWS_ROLE_ARN`:
+
+```bash
+gh secret set AWS_ROLE_ARN \
+  --repo TimothyJAndrus/aws-agent-toolkit-setup \
+  --body "arn:aws:iam::<ACCOUNT_ID>:role/GitHubActions-AgentToolkitVerify"
+```
+
+Verify it was stored:
+
+```bash
+gh secret list --repo TimothyJAndrus/aws-agent-toolkit-setup
+```
+
+---
+
+### Step E — Enable the Workflow Job
+
+In `.github/workflows/ci.yml`, remove the `if: false` guard from the `verify` job:
+
+```yaml
+  verify:
+    name: Integration test (verify.sh)
+    runs-on: ubuntu-latest
+    needs: lint
+    # if: false  ← delete this line
+```
+
+Commit and push — the `verify` job will run on the next push to `main`.
+
+---
+
+### Verifying the Integration
+
+After pushing, confirm the workflow succeeded:
+
+```bash
+gh run list --repo TimothyJAndrus/aws-agent-toolkit-setup --limit 5
+```
+
+Stream live logs for the most recent run:
+
+```bash
+gh run watch --repo TimothyJAndrus/aws-agent-toolkit-setup
+```
+
+A successful `verify` job output looks like:
+
+```
+[PASS]  AWS CLI found: aws-cli/2.x.x
+[PASS]  Credentials valid — Account: <ACCOUNT_ID>
+[PASS]  Catalog accessible — 89 skills available
+[PASS]  Bedrock accessible — 119 foundation models in us-west-2
+[PASS]  Log group created
+[PASS]  Log group confirmed in AWS
+[PASS]  Log group deleted — no resources left behind
+
+Results: 7/7 checks passed
+```
+
+### Cleaning Up
+
+To remove the OIDC resources when they are no longer needed:
+
+```bash
+# Detach policy and delete role
+aws iam detach-role-policy \
+  --role-name GitHubActions-AgentToolkitVerify \
+  --policy-arn "$POLICY_ARN"
+
+aws iam delete-policy --policy-arn "$POLICY_ARN"
+aws iam delete-role --role-name GitHubActions-AgentToolkitVerify
+
+# Remove the OIDC provider (only if no other roles use it)
+# aws iam delete-open-id-connect-provider \
+#   --open-id-connect-provider-arn arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com
+```
+
+---
+
 ## Day-to-Day Usage
 
 ### Refresh expired credentials
@@ -251,6 +485,45 @@ aws agent-toolkit remove-skill --skill-name <skill-name> --region us-east-1
 | `aws ssm put-parameter` hangs | SSM write operations restricted for root account credentials | Use an IAM user or role (not root) for day-to-day operations |
 | Exit code 253 on toolkit install | Non-interactive terminal | Run `aws configure agent-toolkit --region us-east-1` manually |
 | Browser does not open on `aws login` | Headless environment | Copy the URL from terminal output and open it manually |
+| GitHub Actions OIDC: `AccessDenied` on `AssumeRoleWithWebIdentity` | Account-level restriction (see below) | Use IAM access key secrets as a workaround |
+
+### OIDC Federation AccessDenied — Details
+
+Despite a correctly configured OIDC provider, IAM role, and trust policy, GitHub Actions
+consistently receives `AccessDenied` when calling `sts:AssumeRoleWithWebIdentity`. This
+persists across:
+
+- Both `us-east-1` (global) and `us-west-2` (regional) STS endpoints
+- Resources created by both the root IAM Identity Center session and an IAM user
+- Both `sub` and `job_workflow_ref` trust conditions
+- With `id-token: write` set at both workflow and job level
+
+The JWT claims (`aud`, `sub`, `job_workflow_ref`) all match the trust policy exactly
+(confirmed via in-runner JWT decoding). No SCPs, no permission boundaries, no AWS
+Organizations. This is consistent with a new account-level restriction that AWS has
+applied to `sts:AssumeRoleWithWebIdentity` for certain account types.
+
+**Workaround — use IAM access key secrets:**
+
+1. Create an IAM user with the `AgentToolkitVerifyCI` policy attached
+2. Generate access keys for that user
+3. Store them as GitHub Actions secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+4. Replace the `Configure AWS credentials (OIDC)` step in `ci.yml` with:
+
+```yaml
+      - name: Configure AWS credentials (access keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+```
+
+**Resolving OIDC at the account level:**
+Contact AWS Support and ask them to investigate why `sts:AssumeRoleWithWebIdentity`
+returns `AccessDenied` for GitHub Actions OIDC tokens. Reference error:
+`An error occurred (AccessDenied) when calling the AssumeRoleWithWebIdentity operation:
+Not authorized to perform sts:AssumeRoleWithWebIdentity`.
 
 ---
 
@@ -261,3 +534,5 @@ aws agent-toolkit remove-skill --skill-name <skill-name> --region us-east-1
 - [Agent Toolkit User Guide](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/)
 - [Manual MCP Server Setup](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html)
 - [Amazon Bedrock Foundation Models](https://docs.aws.amazon.com/bedrock/latest/userguide/foundation-models.html)
+- [Configuring OpenID Connect in AWS (GitHub Docs)](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
+- [aws-actions/configure-aws-credentials](https://github.com/aws-actions/configure-aws-credentials)
