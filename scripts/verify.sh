@@ -28,8 +28,8 @@ PASS=0
 FAIL=0
 
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
-pass()    { echo -e "${GREEN}[PASS]${RESET}  $*"; ((PASS++)); }
-fail()    { echo -e "${RED}[FAIL]${RESET}  $*"; ((FAIL++)); }
+pass()    { echo -e "${GREEN}[PASS]${RESET}  $*"; ((PASS++)) || true; }
+fail()    { echo -e "${RED}[FAIL]${RESET}  $*"; ((FAIL++)) || true; }
 warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 section() { echo ""; echo -e "${BOLD}── $* ──────────────────────────────────────${RESET}"; }
 
