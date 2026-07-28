@@ -94,8 +94,9 @@ else
   CREATED=false
 fi
 
-# Describe
+# Describe (brief sleep for CloudWatch eventual consistency)
 if [[ "$CREATED" == true ]]; then
+  sleep 2
   info "Describing log group..."
   if DESCRIBE="$(aws logs describe-log-groups \
       --log-group-name-prefix "$LOG_GROUP" \
