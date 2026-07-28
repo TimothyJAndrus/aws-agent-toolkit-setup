@@ -36,19 +36,6 @@ jobs:
       - name: ShellCheck — verify.sh
         run: shellcheck --severity=warning scripts/verify.sh
 
-  # ── Job 2: Integration test (requires AWS OIDC) ────────────────────────────
-  # To enable this job:
-  #   1. Create an IAM OIDC Identity Provider for GitHub Actions in your account:
-  #      https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html
-  #   2. Create an IAM role trusted by the provider with this condition:
-  #        token.actions.githubusercontent.com:sub = repo:TimothyJAndrus/aws-agent-toolkit-setup:*
-  #   3. Attach the following managed policies to the role:
-  #        - AmazonBedrockReadOnly
-  #        - CloudWatchLogsFullAccess
-  #        Note: agent-toolkit:ListAvailableSkills needs no IAM permission.
-  #   4. Add the role ARN as a repository secret named AWS_ROLE_ARN.
-  #   5. Change `if: false` below to `if: vars.AWS_ROLE_ARN != ''`
-  #      (or remove the `if` entirely once the secret is present).
   verify:
     name: Integration test (verify.sh)
     runs-on: ubuntu-latest
@@ -61,30 +48,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-2
+          role-session-name: GitHubActions-AgentToolkitVerify
+
       - name: Install AWS CLI v2
         run: |
           curl -fsSL 'https://awscli.amazonaws.com/v2/install.sh' | bash
           export PATH="$HOME/.local/bin:$PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Assume role via STS directly (raw error output)
-        run: |
-          TOKEN=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
-          echo "Trying us-east-1 (global STS endpoint)..."
-          aws sts assume-role-with-web-identity \
-            --role-arn "${{ secrets.AWS_ROLE_ARN }}" \
-            --role-session-name debug-session \
-            --web-identity-token "$TOKEN" \
-            --region us-east-1 \
-            --no-cli-pager 2>&1 || true
-          echo "Trying us-west-2 (regional STS endpoint)..."
-          aws sts assume-role-with-web-identity \
-            --role-arn "${{ secrets.AWS_ROLE_ARN }}" \
-            --role-session-name debug-session \
-            --web-identity-token "$TOKEN" \
-            --region us-west-2 \
-            --no-cli-pager 2>&1 || true
 
       - name: Verify AWS identity
         run: aws sts get-caller-identity
